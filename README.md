@@ -260,3 +260,17 @@ Japanese kamon motifs originally scraped from a catalogue website that is no
 longer accessible online (preserved via the Internet Archive); upstream
 provenance cannot be tracked further. We make no copyright claim over those
 source images and release KamonBench solely for non-commercial research use.
+
+## Citation
+
+Please cite as:
+
+<pre>
+@misc{kamonbench2026,
+  title  = {KamonBench: A Grammar-Based Dataset for Evaluating Compositional Factor Recovery in Vision-Language Models},
+  author = {Sproat, Richard and Peluchetti, Stefano},
+  year   = {2026},
+  url    = {https://arxiv.org/abs/2605.13322},
+  note   = {arXiv preprint},
+}
+</pre>
