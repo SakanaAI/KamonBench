@@ -8,13 +8,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from kamonbench.evaluation.program_support import (
-    COMBO_NAMES,
-    ProgramFactors,
-    ProgramRecord,
-    load_json,
-    program_records_from_croissant,
-)
+from kamonbench.data.metadata import load_records, write_records
+from kamonbench.evaluation.program_factors import ProgramFactors
+from kamonbench.evaluation.program_support import COMBO_NAMES, ProgramRecord, program_records
 
 SPLITS = ('train', 'dev', 'test')
 
@@ -23,14 +19,14 @@ def _combo_key(factors: ProgramFactors, combo: str) -> tuple[Any, ...]:
     if combo == 'C,M':
         return factors.containers, factors.motif
     if combo == 'R,M':
-        return factors.relation, factors.motif
+        return factors.modifier, factors.motif
     if combo == 'C,R,M':
-        return factors.containers, factors.relation, factors.motif
+        return factors.containers, factors.modifier, factors.motif
     raise ValueError(f'Unknown combo: {combo}')
 
 
 def _factor_tokens(factors: ProgramFactors) -> tuple[str, ...]:
-    return (*factors.containers, factors.relation, factors.motif)
+    return (*factors.containers, factors.modifier, factors.motif)
 
 
 def _primitive_counts(records: list[ProgramRecord]) -> Counter[str]:
@@ -42,50 +38,6 @@ def _primitive_counts(records: list[ProgramRecord]) -> Counter[str]:
 
 def _can_remove(train_counts: Counter[str], group_counts: Counter[str], *, min_train_count: int) -> bool:
     return all(train_counts[token] - count >= min_train_count for token, count in group_counts.items())
-
-
-def _tokens_to_analysis(tokens: tuple[str, ...]) -> list[dict[str, str]]:
-    return [{'expr': token} for token in tokens]
-
-
-def _set_program_field_descriptions(croissant: dict[str, Any]) -> None:
-    for field in croissant['recordSet'][0].get('field', []):
-        if field.get('name') == 'translation':
-            field['description'] = 'Whitespace-tokenized program label text'
-        elif field.get('name') == 'analysis':
-            field['description'] = 'Structured program label tokens'
-
-
-def _apply_program_labels(croissant: dict[str, Any], records_by_image: dict[str, ProgramRecord]) -> None:
-    data = croissant['recordSet'][0]['data']
-    component_tokens: dict[int, tuple[str, ...]] = {}
-
-    for record in data:
-        if not record.get('is_composite'):
-            continue
-        factors = records_by_image.get(record['image_path'])
-        if factors is None:
-            continue
-        component_ids = record.get('component_ids', [])
-        if component_ids:
-            component_tokens[component_ids[0]] = (factors.factors.motif,)
-            for component_id, container in zip(component_ids[1:], factors.factors.containers, strict=True):
-                component_tokens[component_id] = (container,)
-
-    for record in data:
-        if record.get('is_composite'):
-            factors = records_by_image.get(record['image_path'])
-            if factors is None:
-                continue
-            tokens = _factor_tokens(factors.factors)
-        else:
-            tokens = component_tokens.get(record['id'])
-            if tokens is None:
-                continue
-        record['analysis'] = _tokens_to_analysis(tokens)
-        record['translation'] = ' '.join(tokens)
-
-    _set_program_field_descriptions(croissant)
 
 
 def _split_summary(
@@ -136,9 +88,8 @@ def _split_summary(
 
 
 def create_recombination_split(
-    croissant: dict[str, Any],
+    records: list[dict[str, Any]],
     *,
-    basic_charges_csv: Path,
     combo: str,
     train_ratio: float = 0.8,
     dev_ratio: float = 0.1,
@@ -146,7 +97,7 @@ def create_recombination_split(
     seed: int = 0,
     min_train_primitive_count: int = 1,
     label_mode: str = 'preserve',
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if combo not in COMBO_NAMES:
         raise ValueError(f'Unknown combo: {combo}')
     if label_mode not in {'preserve', 'program'}:
@@ -154,16 +105,16 @@ def create_recombination_split(
     if abs(train_ratio + dev_ratio + test_ratio - 1.0) > 1e-6:
         raise ValueError('Split ratios must sum to 1.0')
 
-    program_records = program_records_from_croissant(croissant, basic_charges_csv=basic_charges_csv)
+    factor_records = program_records(records)
     groups: dict[tuple[Any, ...], list[ProgramRecord]] = defaultdict(list)
-    for record in program_records:
+    for record in factor_records:
         groups[_combo_key(record.factors, combo)].append(record)
 
-    train_counts = _primitive_counts(program_records)
+    train_counts = _primitive_counts(factor_records)
     group_counts = {key: _primitive_counts(records) for key, records in groups.items()}
     group_assignment = {key: 'train' for key in groups}
 
-    total = len(program_records)
+    total = len(factor_records)
     targets = {'dev': int(total * dev_ratio), 'test': total - int(total * train_ratio) - int(total * dev_ratio)}
     split_counts = {'dev': 0, 'test': 0}
 
@@ -182,12 +133,10 @@ def create_recombination_split(
             split_counts[split] += len(groups[key])
             break
 
-    new_croissant = copy.deepcopy(croissant)
-    records_by_image = {record.image: record for record in program_records}
-    split_by_image = {record.image: group_assignment[_combo_key(record.factors, combo)] for record in program_records}
+    data = copy.deepcopy(records)
+    split_by_image = {record.image: group_assignment[_combo_key(record.factors, combo)] for record in factor_records}
     component_splits: dict[int, str] = {}
 
-    data = new_croissant['recordSet'][0]['data']
     for record in data:
         if not record.get('is_composite'):
             continue
@@ -206,10 +155,12 @@ def create_recombination_split(
             record['split'] = component_splits[record['id']]
 
     if label_mode == 'program':
-        _apply_program_labels(new_croissant, records_by_image)
+        for record in data:
+            record['analysis'] = [{'expr': token} for token in record['program_tokens']]
+            record['translation'] = ' '.join(record['program_tokens'])
 
     summary = _split_summary(
-        program_records,
+        factor_records,
         group_assignment,
         combo,
         seed=seed,
@@ -218,18 +169,16 @@ def create_recombination_split(
         test_ratio=test_ratio,
         min_train_primitive_count=min_train_primitive_count,
     )
-    return new_croissant, summary
+    return data, summary
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
-        'create-recombination-split',
-        help='Create a strict factor-recombination Croissant split from existing metadata.',
+        'create-recombination-split', help='Create strict factor-recombination JSONL metadata from existing metadata.'
     )
-    parser.add_argument('--croissant-path', type=Path, required=True)
+    parser.add_argument('--metadata-path', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--summary-output', type=Path, default=None)
-    parser.add_argument('--basic-charges-csv', type=Path, default=Path('data/basic_charges.csv'))
     parser.add_argument('--combo', choices=COMBO_NAMES, default='C,M')
     parser.add_argument('--train-ratio', type=float, default=0.8)
     parser.add_argument('--dev-ratio', type=float, default=0.1)
@@ -241,9 +190,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run(args: argparse.Namespace) -> int:
-    croissant, summary = create_recombination_split(
-        load_json(args.croissant_path),
-        basic_charges_csv=args.basic_charges_csv,
+    records, summary = create_recombination_split(
+        load_records(args.metadata_path),
         combo=args.combo,
         train_ratio=args.train_ratio,
         dev_ratio=args.dev_ratio,
@@ -252,8 +200,10 @@ def _run(args: argparse.Namespace) -> int:
         min_train_primitive_count=args.min_train_primitive_count,
         label_mode=args.label_mode,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(croissant, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    split_name = args.combo.replace(',', '').lower()
+    for record in records:
+        record.setdefault('splits', {})[split_name] = record['split']
+    write_records(args.output, records)
     if args.summary_output:
         args.summary_output.parent.mkdir(parents=True, exist_ok=True)
         args.summary_output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

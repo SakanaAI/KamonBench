@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from kamonbench.evaluation.program_factors import ProgramFactorRow, ProgramFactors, load_jsonl, program_factor_rows
 
@@ -132,17 +133,13 @@ def markdown_table(results: dict[str, dict[str, Any]]) -> str:
     return '\n'.join(lines) + '\n'
 
 
-def _add_arguments(parser: argparse.ArgumentParser) -> None:
+def add_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser('summarize-program-confusions', help='Summarize program-label factor confusions.')
     parser.add_argument('input_jsonl', type=Path)
     parser.add_argument('--model-name', default=None)
     parser.add_argument('--top-k', type=int, default=10)
     parser.add_argument('--output', type=Path, default=None)
     parser.add_argument('--markdown-output', type=Path, default=None)
-
-
-def add_parser(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser('summarize-program-confusions', help='Summarize program-label factor confusions.')
-    _add_arguments(parser)
     parser.set_defaults(_fn=_run)
 
 
@@ -158,15 +155,3 @@ def _run(args: argparse.Namespace) -> int:
         args.markdown_output.write_text(markdown_table({model_name: result}), encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    _add_arguments(parser)
-    parser.set_defaults(_fn=_run)
-    args = parser.parse_args(argv)
-    return int(args._fn(args))
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

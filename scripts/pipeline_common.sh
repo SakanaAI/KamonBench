@@ -6,9 +6,8 @@ pipeline_setup() {
 
     mkdir -p logs reports
 
-    pipeline_dataset_dir=dataset01
-    pipeline_base_croissant=$pipeline_dataset_dir/kamon_croissant.json
-    pipeline_program_croissant=$pipeline_dataset_dir/kamon_croissant_program.json
+    pipeline_base_metadata=${KAMON_METADATA_PATH:-metadata/records.jsonl}
+    pipeline_program_metadata=${KAMON_PROGRAM_METADATA_PATH:-metadata/program.json}
 }
 
 has_best_checkpoint() {
@@ -34,18 +33,20 @@ run_and_log() {
     fi
 }
 
-ensure_base_croissant() {
-    if [ -f "$pipeline_base_croissant" ]; then
+ensure_base_metadata() {
+    if [ -f "$pipeline_base_metadata" ]; then
         return 0
     fi
-    run_and_log install_main_data uv run kamonbench install-main-data --dataset-dir "$pipeline_dataset_dir"
+    echo "Missing metadata: $pipeline_base_metadata" >&2
+    return 1
 }
 
-ensure_program_croissant() {
-    if [ -f "$pipeline_program_croissant" ]; then
+ensure_program_metadata() {
+    if [ -f "$pipeline_program_metadata" ]; then
         return 0
     fi
-    run_and_log convert_program uv run kamonbench convert-to-croissant --dataset-dir "$pipeline_dataset_dir" --label-mode program --output "$pipeline_program_croissant"
+    echo "Missing program-label metadata: $pipeline_program_metadata" >&2
+    return 1
 }
 
 ensure_train() {

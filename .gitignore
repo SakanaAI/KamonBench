@@ -7,9 +7,12 @@ dataset*/
 checkpoints*/
 outputs*/
 logs/
+runs/
 *.pt
 *.pth
 *.ckpt
+*.safetensors
 *.html
-uv.lock
+*.tar.gz
+*.zip
 .DS_Store

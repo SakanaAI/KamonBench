@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate HTML visualization for Kamon model outputs."""
 
 import argparse
@@ -38,18 +37,6 @@ class ReportMetrics:
     normalized_ref_tokens: int
 
     @property
-    def string_correct(self) -> int:
-        return self.normalized_string_correct
-
-    @property
-    def string_accuracy(self) -> float:
-        return self.normalized_string_accuracy
-
-    @property
-    def normalized_string_accuracy(self) -> float:
-        return self.normalized_string_correct / self.total if self.total else 0.0
-
-    @property
     def edit_distance(self) -> int:
         return self.insertions + self.deletions + self.substitutions
 
@@ -75,35 +62,6 @@ def resolve_report_config(config: ReportConfig) -> ReportConfig:
     return replace(config, input_jsonl=input_jsonl, output=output)
 
 
-def preprocess_text_for_comparison(text):
-    """Preprocess text for character edit distance comparison.
-
-    Args:
-        text: Input text string
-
-    Returns:
-        Preprocessed text with whitespace removed and converted to hiragana
-    """
-    return normalize_japanese_for_comparison(text)
-
-
-def calculate_character_error_rate(reference: str, predicted: str) -> tuple[int, int, int, float]:
-    """Calculate character-level edit distance and error rate.
-
-    Args:
-        reference: Ground truth string
-        predicted: Predicted string
-
-    Returns:
-        Tuple of (insertions, deletions, substitutions, error_rate)
-    """
-    return character_error_rate(reference, predicted)
-
-
-def calculate_token_error_rate(reference: str, predicted: str) -> tuple[int, int, int, float]:
-    return token_error_rate(reference, predicted)
-
-
 def include_in_visual_report(item: dict) -> bool:
     image_path = item.get('image', '')
     return '_base' not in image_path and '_container' not in image_path
@@ -126,18 +84,18 @@ def calculate_report_metrics(data: list[dict]) -> ReportMetrics:
     for item in data:
         reference = item.get('reference', '')
         predicted = item.get('predicted', '')
-        ins, dels, subs, _ = calculate_character_error_rate(reference, predicted)
+        ins, dels, subs, _ = character_error_rate(reference, predicted)
         insertions += ins
         deletions += dels
         substitutions += subs
 
-        tok_ins, tok_dels, tok_subs, _ = calculate_token_error_rate(reference, predicted)
+        tok_ins, tok_dels, tok_subs, _ = token_error_rate(reference, predicted)
         token_insertions += tok_ins
         token_deletions += tok_dels
         token_substitutions += tok_subs
 
-        ref_norm = preprocess_text_for_comparison(reference)
-        pred_norm = preprocess_text_for_comparison(predicted)
+        ref_norm = normalize_japanese_for_comparison(reference)
+        pred_norm = normalize_japanese_for_comparison(predicted)
         normalized_string_correct += int(ref_norm == pred_norm)
         normalized_ref_chars += len(ref_norm)
         normalized_ref_tokens += len(reference.split())
@@ -209,7 +167,7 @@ def image_to_base64(image_path: str) -> str:
                 '.webp': 'image/webp',
             }.get(ext, 'image/jpeg')
             return f'data:{mime_type};base64,{img_base64}'
-    except Exception as e:
+    except OSError as e:
         print(f'Warning: Could not load image {image_path}: {e}')
         return ''
 
@@ -284,9 +242,12 @@ def generate_html_page(jsonl_file: str, output_file: str) -> None:
         if len(train_images_reference) == 0 and len(train_images_predicted) == 0:
             nenit += 1
 
-        if preprocess_text_for_comparison(reference) == preprocess_text_for_comparison(predicted):
-            if len(train_images_reference) == 0 and len(train_images_predicted) == 0:
-                perfect_predictions_no_training.append((idx + 1, reference))
+        if (
+            normalize_japanese_for_comparison(reference) == normalize_japanese_for_comparison(predicted)
+            and len(train_images_reference) == 0
+            and len(train_images_predicted) == 0
+        ):
+            perfect_predictions_no_training.append((idx + 1, reference))
 
     nit_cor = len(perfect_predictions_no_training)
     nit_rate = nit_cor / nenit if nenit else 0.0
@@ -656,11 +617,11 @@ def generate_html_page(jsonl_file: str, output_file: str) -> None:
 
         # Calculate individual error rates
         if program_report:
-            ins, dels, subs, ter = calculate_token_error_rate(reference, predicted)
+            ins, dels, subs, ter = token_error_rate(reference, predicted)
             error_info = f'Individual TER: {ter:.3f} (I:{ins}, D:{dels}, S:{subs})'
             error_class = 'error-info perfect' if ter == 0.0 else 'error-info'
         else:
-            ins, dels, subs, cer = calculate_character_error_rate(reference, predicted)
+            ins, dels, subs, cer = character_error_rate(reference, predicted)
             error_info = f'Individual CER: {cer:.3f} (I:{ins}, D:{dels}, S:{subs})'
             error_class = 'error-info perfect' if cer == 0.0 else 'error-info'
 
@@ -694,33 +655,6 @@ def generate_html_page(jsonl_file: str, output_file: str) -> None:
 
     print(f'HTML visualization generated: {output_file}')
     print(f'Total examples: {metrics.total}')
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Generate HTML visualization for Kamon model outputs')
-    parser.add_argument('input_jsonl', nargs='?', default=None, help='Input JSONL file with model outputs')
-    parser.add_argument('-o', '--output', default=None, help='Output HTML file (default: visualization.html)')
-    parser.add_argument('--model', choices=['vgg', 'vit_decoder'], default='vgg')
-    parser.add_argument(
-        '--use-translation', action='store_true', help='Use the default inference output path for translation mode.'
-    )
-
-    args = parser.parse_args()
-    config = resolve_report_config(
-        ReportConfig(
-            input_jsonl=args.input_jsonl, output=args.output, model=args.model, use_translation=args.use_translation
-        )
-    )
-
-    if not os.path.exists(config.input_jsonl):
-        print(f'Error: Input file {config.input_jsonl} does not exist')
-        return
-
-    generate_html_page(config.input_jsonl, config.output)
-
-
-if __name__ == '__main__':
-    main()
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:

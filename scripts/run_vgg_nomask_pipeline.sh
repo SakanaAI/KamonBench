@@ -11,7 +11,7 @@ pipeline_repo_root=$(cd "$script_dir/.." && pwd)
 . "$script_dir/pipeline_common.sh"
 
 pipeline_setup
-ensure_base_croissant
+ensure_base_metadata || exit 1
 
 vgg_nomask_train_flags="--no-masks \
     --ngram-length 4 \
@@ -27,21 +27,21 @@ vgg_nomask_train_flags="--no-masks \
 
 ja_ckpt=checkpoints_vgg_nomask_ja
 ja_out=outputs_vgg_nomask_ja
-ensure_train train_vgg_nomask_ja "$ja_ckpt" "$ja_out/step_final/predictions.jsonl" uv run kamonbench train $vgg_nomask_train_flags --checkpoint-dir "$ja_ckpt" --output-dir "$ja_out"
-ensure_file_step infer_vgg_nomask_ja "$ja_out/test_decode.jsonl" uv run kamonbench infer --checkpoint-path "$ja_ckpt/checkpoint_best_*.pt" --output-file "$ja_out/test_decode.jsonl"
+ensure_train train_vgg_nomask_ja "$ja_ckpt" "$ja_out/step_final/predictions.jsonl" uv run kamonbench train --metadata-path "$pipeline_base_metadata" $vgg_nomask_train_flags --checkpoint-dir "$ja_ckpt" --output-dir "$ja_out"
+ensure_file_step infer_vgg_nomask_ja "$ja_out/test_decode.jsonl" uv run kamonbench infer --metadata-path "$pipeline_base_metadata" --checkpoint-path "$ja_ckpt/checkpoint_best_*.pt" --output-file "$ja_out/test_decode.jsonl"
 ensure_file_step report_vgg_nomask_ja reports/vgg_nomask_ja.html uv run kamonbench visualize "$ja_out/test_decode.jsonl" -o reports/vgg_nomask_ja.html
 
 en_ckpt=checkpoints_vgg_nomask_en
 en_out=outputs_vgg_nomask_en
-ensure_train train_vgg_nomask_en "$en_ckpt" "$en_out/step_final/predictions.jsonl" uv run kamonbench train $vgg_nomask_train_flags --use-translation --checkpoint-dir "$en_ckpt" --output-dir "$en_out"
-ensure_file_step infer_vgg_nomask_en "$en_out/test_decode.jsonl" uv run kamonbench infer --use-translation --checkpoint-path "$en_ckpt/checkpoint_best_*.pt" --output-file "$en_out/test_decode.jsonl"
+ensure_train train_vgg_nomask_en "$en_ckpt" "$en_out/step_final/predictions.jsonl" uv run kamonbench train --metadata-path "$pipeline_base_metadata" $vgg_nomask_train_flags --use-translation --checkpoint-dir "$en_ckpt" --output-dir "$en_out"
+ensure_file_step infer_vgg_nomask_en "$en_out/test_decode.jsonl" uv run kamonbench infer --metadata-path "$pipeline_base_metadata" --use-translation --checkpoint-path "$en_ckpt/checkpoint_best_*.pt" --output-file "$en_out/test_decode.jsonl"
 ensure_file_step report_vgg_nomask_en reports/vgg_nomask_en.html uv run kamonbench visualize "$en_out/test_decode.jsonl" -o reports/vgg_nomask_en.html
 
-ensure_program_croissant
+ensure_program_metadata || exit 1
 
 program_ckpt=checkpoints_program_vgg_nomask
 program_out=outputs_program_vgg_nomask
 
-ensure_train train_program_vgg_nomask "$program_ckpt" "$program_out/step_final/predictions.jsonl" uv run kamonbench train $vgg_nomask_train_flags --croissant-path "$pipeline_program_croissant" --checkpoint-dir "$program_ckpt" --output-dir "$program_out"
-ensure_file_step infer_program_vgg_nomask "$program_out/test_decode.jsonl" uv run kamonbench infer --checkpoint-path "$program_ckpt/checkpoint_best_*.pt" --output-file "$program_out/test_decode.jsonl" --croissant-path "$pipeline_program_croissant"
+ensure_train train_program_vgg_nomask "$program_ckpt" "$program_out/step_final/predictions.jsonl" uv run kamonbench train $vgg_nomask_train_flags --metadata-path "$pipeline_program_metadata" --checkpoint-dir "$program_ckpt" --output-dir "$program_out"
+ensure_file_step infer_program_vgg_nomask "$program_out/test_decode.jsonl" uv run kamonbench infer --checkpoint-path "$program_ckpt/checkpoint_best_*.pt" --output-file "$program_out/test_decode.jsonl" --metadata-path "$pipeline_program_metadata"
 ensure_file_step report_program_vgg_nomask reports/program_vgg_nomask.html uv run kamonbench visualize "$program_out/test_decode.jsonl" -o reports/program_vgg_nomask.html

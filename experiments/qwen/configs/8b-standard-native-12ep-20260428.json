@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "name": "8b-standard-native-12ep-20260428",
+  "paths": {
+    "metadata": "metadata/program.json",
+    "image_root": "."
+  },
+  "model": {
+    "id": "Qwen/Qwen3-VL-8B-Instruct",
+    "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+    "attention_implementation": "sdpa",
+    "dtype": "bfloat16",
+    "expected_base_parameters": 8767123696,
+    "expected_tie_word_embeddings": false
+  },
+  "data": {
+    "train_rows": 43280,
+    "train_composites": 16000,
+    "train_components": 27280,
+    "dev_composites": 2000,
+    "test_composites": 2000,
+    "augmentations_per_record": 3,
+    "exposures_per_record_per_epoch": 4
+  },
+  "prompt": "Return only the KamonBench program code. Do not explain.",
+  "processor": {
+    "min_pixels": 50176,
+    "max_pixels": 50176,
+    "expected_grid_thw": [1, 14, 14],
+    "expected_merged_image_tokens": 49
+  },
+  "adaptation": {
+    "frozen_base_precision": "bfloat16",
+    "trainable_parameter_precision": "float32",
+    "compute_autocast": "bfloat16",
+    "lora": {
+      "rank": 16,
+      "alpha": 32,
+      "dropout": 0.05,
+      "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]
+    },
+    "modules_to_save": ["visual.merger", "lm_head"],
+    "vision_depth": 27,
+    "vision_block_indices": [25, 26]
+  },
+  "optimization": {
+    "optimizer": "AdamW",
+    "lora_learning_rate": 0.0001,
+    "merger_and_head_learning_rate": 1e-5,
+    "vision_learning_rate": 2e-6,
+    "weight_decay": 0.0,
+    "scheduler": "cosine",
+    "warmup_ratio": 0.03,
+    "schedule_reference_epochs": 12,
+    "max_grad_norm": 1.0,
+    "evaluate_at_epoch_fractions": [0.25, 0.5, 0.75, 1.0]
+  },
+  "distributed": {
+    "strategy": "PyTorch DDP",
+    "target_global_batch_size": 64,
+    "per_device_batch_size": 8,
+    "evaluation_per_device_batch_size": 8,
+    "find_unused_parameters": false
+  },
+  "generation": {
+    "do_sample": false,
+    "num_beams": 1,
+    "max_new_tokens": 24,
+    "grammar_constraint": false,
+    "prediction_cleanup": "skip chat/EOS special tokens and trim surrounding whitespace only"
+  },
+  "runtime": {
+    "seed": 20260428,
+    "bootstrap_seed": 20260428,
+    "bootstrap_samples": 10000,
+    "num_workers": 2,
+    "deterministic_algorithms": true
+  },
+  "run": {
+    "id": "8b-standard-native-12ep-20260428",
+    "purpose": "Supervised program-code baseline",
+    "output_dir": "runs/8b-standard-native-12ep-20260428",
+    "max_epochs": 12,
+    "expected_gradient_accumulation_steps": 1
+  },
+  "output_tokens": "native"
+}

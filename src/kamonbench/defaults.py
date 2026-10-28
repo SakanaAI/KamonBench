@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-DEFAULT_CROISSANT_PATH = 'dataset01/kamon_croissant.json'
+DEFAULT_METADATA_PATH = 'metadata/records.jsonl'
 DEFAULT_INFERENCE_RESULT_NAME = 'test_decode.jsonl'
 DEFAULT_INFER_MODEL_FOR_PATHS = 'vgg'
 

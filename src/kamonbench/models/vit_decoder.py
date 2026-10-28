@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import timm
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 def _causal_mask(seq_len: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
@@ -76,7 +74,6 @@ class DecoderImageCaptioner(nn.Module):
         dropout: float = 0.1,
         token_dropout: float = 0.0,
         train_backbone: bool = False,
-        enc_proj_rank: int = 0,
     ):
         super().__init__()
         self.encoder = FrozenTimmViT(encoder_name, pretrained=True, drop_cls_token=True, trainable=train_backbone)
@@ -84,13 +81,7 @@ class DecoderImageCaptioner(nn.Module):
         self.vocab_size = vocab_size
         self.bos_token = vocab_size
         self.max_seq_len = seq_len
-        self.enc_proj_rank = enc_proj_rank
-        if enc_proj_rank and 0 < enc_proj_rank < min(enc_dim, d_model):
-            self.enc_to_dec_proj = nn.Sequential(
-                nn.Linear(enc_dim, enc_proj_rank, bias=False), nn.Linear(enc_proj_rank, d_model, bias=True)
-            )
-        else:
-            self.enc_to_dec_proj = nn.Linear(enc_dim, d_model)
+        self.enc_to_dec_proj = nn.Linear(enc_dim, d_model)
         self.text_embedding = nn.Embedding(vocab_size + 1, d_model)
         self.pos_embedding = nn.Parameter(torch.randn(1, seq_len, d_model))
         self.dropout = nn.Dropout(dropout)
@@ -158,7 +149,7 @@ class DecoderImageCaptioner(nn.Module):
         end_token: int,
         *,
         start_token: int = -1,
-        max_length: Optional[int] = None,
+        max_length: int | None = None,
         temperature: float = 0.0,
     ) -> torch.Tensor:
         if temperature != 0.0:

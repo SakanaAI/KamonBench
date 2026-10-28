@@ -10,7 +10,7 @@ pipeline_repo_root=$(cd "$script_dir/.." && pwd)
 . "$script_dir/pipeline_common.sh"
 
 pipeline_setup
-ensure_base_croissant
+ensure_base_metadata || exit 1
 
 vgg_train_flags="--ngram-length 1 \
     --batch-size 64 \
@@ -23,19 +23,19 @@ vgg_train_flags="--ngram-length 1 \
     --label-smoothing 0.02 \
     --eval-composites-only"
 
-ensure_train train_vgg_ja checkpoints_vgg_ja outputs_vgg_ja/step_final/predictions.jsonl uv run kamonbench train $vgg_train_flags
-ensure_file_step infer_vgg_ja outputs_vgg_ja/test_decode.jsonl uv run kamonbench infer
+ensure_train train_vgg_ja checkpoints_vgg_ja outputs_vgg_ja/step_final/predictions.jsonl uv run kamonbench train --metadata-path "$pipeline_base_metadata" $vgg_train_flags
+ensure_file_step infer_vgg_ja outputs_vgg_ja/test_decode.jsonl uv run kamonbench infer --metadata-path "$pipeline_base_metadata"
 ensure_file_step report_vgg_ja reports/vgg_ja.html uv run kamonbench visualize --model vgg -o reports/vgg_ja.html
 
-ensure_train train_vgg_en checkpoints_vgg_en outputs_vgg_en/step_final/predictions.jsonl uv run kamonbench train $vgg_train_flags --use-translation
-ensure_file_step infer_vgg_en outputs_vgg_en/test_decode.jsonl uv run kamonbench infer --use-translation
+ensure_train train_vgg_en checkpoints_vgg_en outputs_vgg_en/step_final/predictions.jsonl uv run kamonbench train --metadata-path "$pipeline_base_metadata" $vgg_train_flags --use-translation
+ensure_file_step infer_vgg_en outputs_vgg_en/test_decode.jsonl uv run kamonbench infer --metadata-path "$pipeline_base_metadata" --use-translation
 ensure_file_step report_vgg_en reports/vgg_en.html uv run kamonbench visualize --model vgg --use-translation -o reports/vgg_en.html
 
-ensure_program_croissant
+ensure_program_metadata || exit 1
 
 program_vgg_ckpt=checkpoints_program_vgg
 program_vgg_out=outputs_program_vgg
 
-ensure_train train_program_vgg "$program_vgg_ckpt" "$program_vgg_out/step_final/predictions.jsonl" uv run kamonbench train $vgg_train_flags --croissant-path "$pipeline_program_croissant" --checkpoint-dir "$program_vgg_ckpt" --output-dir "$program_vgg_out"
-ensure_file_step infer_program_vgg "$program_vgg_out/test_decode.jsonl" uv run kamonbench infer --checkpoint-path "$program_vgg_ckpt/checkpoint_best_*.pt" --output-file "$program_vgg_out/test_decode.jsonl" --croissant-path "$pipeline_program_croissant"
+ensure_train train_program_vgg "$program_vgg_ckpt" "$program_vgg_out/step_final/predictions.jsonl" uv run kamonbench train $vgg_train_flags --metadata-path "$pipeline_program_metadata" --checkpoint-dir "$program_vgg_ckpt" --output-dir "$program_vgg_out"
+ensure_file_step infer_program_vgg "$program_vgg_out/test_decode.jsonl" uv run kamonbench infer --checkpoint-path "$program_vgg_ckpt/checkpoint_best_*.pt" --output-file "$program_vgg_out/test_decode.jsonl" --metadata-path "$pipeline_program_metadata"
 ensure_file_step report_program_vgg reports/program_vgg.html uv run kamonbench visualize "$program_vgg_out/test_decode.jsonl" -o reports/program_vgg.html

@@ -53,11 +53,10 @@ def generate(
     containers_loaded = container_list
 
     if modifier is not None:
-        if num_containers == 0:
-            if modifier not in CONTAINERLESS_MODS:
-                raise ValueError(
-                    f"Modifier '{modifier}' not valid for containerless patterns. Must be one of {CONTAINERLESS_MODS}"
-                )
+        if num_containers == 0 and modifier not in CONTAINERLESS_MODS:
+            raise ValueError(
+                f"Modifier '{modifier}' not valid for containerless patterns. Must be one of {CONTAINERLESS_MODS}"
+            )
     else:
         if num_containers == 0:
             modifier = random.choice(CONTAINERLESS_MODS)

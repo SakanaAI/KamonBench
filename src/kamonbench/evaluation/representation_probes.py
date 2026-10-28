@@ -2,21 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn as nn
 from PIL import Image
+from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torchvision import transforms
 from tqdm import tqdm
 
 from kamonbench.checkpoints import load_checkpoint
+from kamonbench.data.metadata import load_records
+from kamonbench.defaults import DEFAULT_METADATA_PATH
 from kamonbench.evaluation.program_factors import parse_program_factors
-from kamonbench.evaluation.program_support import load_json, program_records_from_croissant
+from kamonbench.evaluation.program_support import program_records
 from kamonbench.torch_utils import autocast_context, configure_torch_runtime
 
 NULL_CONTAINER = 'C:none'
@@ -27,8 +28,7 @@ FACTOR_NAMES = ('container', 'modifier', 'motif')
 class FeatureConfig:
     checkpoint_path: Path
     model_name: str
-    croissant_path: Path
-    basic_charges_csv: Path
+    metadata_path: Path
     image_root: Path
     output_dir: Path
     splits: tuple[str, ...] = ('train', 'dev', 'test')
@@ -42,21 +42,6 @@ class ProbeConfig:
     feature_dir: Path
     model_name: str
     output_dir: Path
-    batch_size: int = 512
-    max_epochs: int = 100
-    patience: int = 10
-    lr: float = 1e-3
-    weight_decay: float = 1e-4
-    device: str = 'cuda:0'
-    seed: int = 20260428
-
-
-@dataclass(frozen=True)
-class PositionProbeConfig:
-    feature_dir: Path
-    model_name: str
-    output_dir: Path
-    positions: int | None = None
     batch_size: int = 512
     max_epochs: int = 100
     patience: int = 10
@@ -81,8 +66,7 @@ class ProbeSupportConfig:
     feature_dir: Path
     probe_dir: Path
     model_name: str
-    croissant_path: Path
-    basic_charges_csv: Path
+    metadata_path: Path
     output_dir: Path
     batch_size: int = 512
 
@@ -118,15 +102,13 @@ def _select_device(name: str) -> torch.device:
 def _factor_labels(factors: Any) -> dict[str, str]:
     return {
         'container': factors.containers[0] if factors.containers else NULL_CONTAINER,
-        'modifier': factors.relation,
+        'modifier': factors.modifier,
         'motif': factors.motif,
     }
 
 
 def _split_items(config: FeatureConfig) -> dict[str, list[dict[str, Any]]]:
-    records = program_records_from_croissant(
-        load_json(config.croissant_path), basic_charges_csv=config.basic_charges_csv
-    )
+    records = program_records(load_records(config.metadata_path))
     items: dict[str, list[dict[str, Any]]] = {split: [] for split in config.splits}
     for record in records:
         if record.split not in items:
@@ -345,84 +327,6 @@ def train_probes(config: ProbeConfig) -> dict[str, Any]:
     return result
 
 
-def _infer_position_count(feature_dim: int, positions: int | None) -> int:
-    if positions is not None:
-        if positions <= 0:
-            raise ValueError(f'positions must be positive, got {positions}')
-        if feature_dim % positions != 0:
-            raise ValueError(f'Feature dimension {feature_dim} is not divisible by positions={positions}')
-        return positions
-    if feature_dim % 4096 == 0:
-        return feature_dim // 4096
-    raise ValueError('Could not infer VGG position count; pass --positions explicitly')
-
-
-def _position_slice(x: torch.Tensor, position: int, positions: int) -> torch.Tensor:
-    feature_dim = x.shape[1]
-    per_position = feature_dim // positions
-    start = position * per_position
-    return x[:, start : start + per_position]
-
-
-def train_position_probes(config: PositionProbeConfig) -> dict[str, Any]:
-    torch.manual_seed(config.seed)
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-
-    train = _load_split(config.feature_dir, config.model_name, 'train')
-    dev = _load_split(config.feature_dir, config.model_name, 'dev')
-    test = _load_split(config.feature_dir, config.model_name, 'test')
-    feature_dim = int(train['features'].shape[1])
-    positions = _infer_position_count(feature_dim, config.positions)
-    per_position_dim = feature_dim // positions
-
-    probe_config = ProbeConfig(
-        feature_dir=config.feature_dir,
-        model_name=config.model_name,
-        output_dir=config.output_dir,
-        batch_size=config.batch_size,
-        max_epochs=config.max_epochs,
-        patience=config.patience,
-        lr=config.lr,
-        weight_decay=config.weight_decay,
-        device=config.device,
-        seed=config.seed,
-    )
-    result: dict[str, Any] = {
-        'model_name': config.model_name,
-        'feature_dir': str(config.feature_dir),
-        'feature_dim': feature_dim,
-        'positions': positions,
-        'per_position_dim': per_position_dim,
-        'position_feature_kind': 'vgg_position_slice',
-        'position_probes': [],
-    }
-
-    for position in range(positions):
-        train_x, dev_x, test_x = _standardize(
-            _position_slice(train['features'], position, positions),
-            _position_slice(dev['features'], position, positions),
-            _position_slice(test['features'], position, positions),
-        )
-        for factor in FACTOR_NAMES:
-            label_to_idx, classes = _label_maps(train['labels'][factor])
-            train_y = _encode_labels(train['labels'][factor], label_to_idx)
-            dev_y = _encode_labels(dev['labels'][factor], label_to_idx, allow_unknown=True)
-            test_y = _encode_labels(test['labels'][factor], label_to_idx, allow_unknown=True)
-            metrics, probe = _train_probe(
-                train_x, train_y, dev_x, dev_y, test_x, test_y, config=probe_config, num_classes=len(classes)
-            )
-            result['position_probes'].append(
-                {'position': position, 'factor': factor, 'classes': len(classes), **metrics}
-            )
-            torch.save(
-                probe.cpu().state_dict(), config.output_dir / f'{config.model_name}_pos{position}_{factor}_probe.pt'
-            )
-
-    output_path = config.output_dir / f'{config.model_name}_position_probe_metrics.json'
-    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    return result
-
-
 def _probe_predictions(config: CompareConfig, factor: str) -> tuple[dict[str, Any], list[str], set[str]]:
     train = _load_split(config.feature_dir, config.model_name, 'train')
     dev = _load_split(config.feature_dir, config.model_name, 'dev')
@@ -521,11 +425,7 @@ def _support_combo_key(labels: dict[str, str], combo: str) -> tuple[str, ...]:
 
 def compare_probe_support(config: ProbeSupportConfig) -> dict[str, Any]:
     train_records = [
-        record
-        for record in program_records_from_croissant(
-            load_json(config.croissant_path), basic_charges_csv=config.basic_charges_csv
-        )
-        if record.split == 'train'
+        record for record in program_records(load_records(config.metadata_path)) if record.split == 'train'
     ]
     support = {
         combo: {_support_combo_key(_factor_labels(record.factors), combo) for record in train_records}
@@ -594,22 +494,6 @@ def probe_markdown(results: dict[str, dict[str, Any]]) -> str:
     return '\n'.join(lines) + '\n'
 
 
-def position_probe_markdown(results: dict[str, dict[str, Any]]) -> str:
-    lines = [
-        '| Model | Position | Factor | Test CE | Test Acc | Known test | Unknown test |',
-        '| --- | ---: | --- | ---: | ---: | ---: | ---: |',
-    ]
-    for model_name, result in results.items():
-        for item in result['position_probes']:
-            test = item['test']
-            lines.append(
-                f'| {model_name} | {item["position"]} | {item["factor"]} | '
-                f'{test["loss"]:.3f} | {test["accuracy"]:.3f} | '
-                f'{test["known_total"]} | {test["unknown_total"]} |'
-            )
-    return '\n'.join(lines) + '\n'
-
-
 def comparison_markdown(results: dict[str, dict[str, Any]]) -> str:
     lines = [
         '| Model | Factor | Slice | Probe Acc | Output Acc | N | Test labels absent from train |',
@@ -647,59 +531,10 @@ def probe_support_markdown(results: dict[str, dict[str, Any]], *, factor: str = 
     return '\n'.join(lines) + '\n'
 
 
-def summarize_probe_seed_stability(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
-    values: dict[str, dict[str, dict[str, dict[str, list[float]]]]] = {}
-    for comparison in comparisons:
-        model_name = comparison['model_name']
-        model_values = values.setdefault(model_name, {})
-        for factor in FACTOR_NAMES:
-            factor_values = model_values.setdefault(factor, {})
-            for slice_name in ['all', 'contained', 'containerless']:
-                accuracy = comparison['factors'][factor]['probe'][slice_name]['accuracy']
-                if accuracy is None:
-                    continue
-                factor_values.setdefault(slice_name, {}).setdefault('accuracies', []).append(float(accuracy))
-
-    summary: dict[str, Any] = {'runs': len(comparisons), 'models': {}}
-    for model_name, factors in values.items():
-        summary['models'][model_name] = {'factors': {}}
-        for factor, slices in factors.items():
-            summary['models'][model_name]['factors'][factor] = {}
-            for slice_name, item in slices.items():
-                xs = item['accuracies']
-                summary['models'][model_name]['factors'][factor][slice_name] = {
-                    'runs': len(xs),
-                    'mean': statistics.fmean(xs),
-                    'sd': statistics.stdev(xs) if len(xs) > 1 else 0.0,
-                    'min': min(xs),
-                    'max': max(xs),
-                }
-    return summary
-
-
-def seed_stability_markdown(result: dict[str, Any], *, factor: str = 'motif') -> str:
-    def fmt(value: float) -> str:
-        return f'{value + 1e-12:.3f}'
-
-    lines = [
-        '| Model | Slice | Probe Acc Mean | SD | Min | Max | Runs |',
-        '| --- | --- | ---: | ---: | ---: | ---: | ---: |',
-    ]
-    for model_name, model in result['models'].items():
-        for slice_name in ['all', 'contained', 'containerless']:
-            item = model['factors'][factor][slice_name]
-            lines.append(
-                f'| {model_name} | {slice_name} | {fmt(item["mean"])} | {fmt(item["sd"])} | '
-                f'{fmt(item["min"])} | {fmt(item["max"])} | {item["runs"]} |'
-            )
-    return '\n'.join(lines) + '\n'
-
-
 def _extract_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--checkpoint-path', type=Path, required=True)
     parser.add_argument('--model-name', required=True)
-    parser.add_argument('--croissant-path', type=Path, default=Path('etc/source/kamon_croissant.json'))
-    parser.add_argument('--basic-charges-csv', type=Path, default=Path('dev/KamonBench/data/basic_charges.csv'))
+    parser.add_argument('--metadata-path', type=Path, default=Path(DEFAULT_METADATA_PATH))
     parser.add_argument('--image-root', type=Path, default=Path('.'))
     parser.add_argument('--output-dir', type=Path, default=Path('etc/frozen_features'))
     parser.add_argument('--splits', nargs='+', default=['train', 'dev', 'test'])
@@ -712,20 +547,6 @@ def _probe_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--feature-dir', type=Path, default=Path('etc/frozen_features'))
     parser.add_argument('--model-name', required=True)
     parser.add_argument('--output-dir', type=Path, default=Path('etc/frozen_probe_metrics'))
-    parser.add_argument('--batch-size', type=int, default=512)
-    parser.add_argument('--max-epochs', type=int, default=100)
-    parser.add_argument('--patience', type=int, default=10)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--weight-decay', type=float, default=1e-4)
-    parser.add_argument('--device', default='cuda:0')
-    parser.add_argument('--seed', type=int, default=20260428)
-
-
-def _position_probe_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument('--feature-dir', type=Path, default=Path('etc/frozen_features'))
-    parser.add_argument('--model-name', required=True)
-    parser.add_argument('--output-dir', type=Path, default=Path('etc/position_probe_metrics'))
-    parser.add_argument('--positions', type=int, default=None)
     parser.add_argument('--batch-size', type=int, default=512)
     parser.add_argument('--max-epochs', type=int, default=100)
     parser.add_argument('--patience', type=int, default=10)
@@ -748,17 +569,9 @@ def _probe_support_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--feature-dir', type=Path, default=Path('etc/frozen_features'))
     parser.add_argument('--probe-dir', type=Path, default=Path('etc/frozen_probe_metrics'))
     parser.add_argument('--model-name', required=True)
-    parser.add_argument('--croissant-path', type=Path, default=Path('etc/source/kamon_croissant.json'))
-    parser.add_argument('--basic-charges-csv', type=Path, default=Path('dev/KamonBench/data/basic_charges.csv'))
+    parser.add_argument('--metadata-path', type=Path, default=Path(DEFAULT_METADATA_PATH))
     parser.add_argument('--output-dir', type=Path, default=Path('etc/frozen_probe_metrics'))
     parser.add_argument('--batch-size', type=int, default=512)
-
-
-def _seed_stability_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument('comparison_json', nargs='+', type=Path)
-    parser.add_argument('--factor', choices=FACTOR_NAMES, default='motif')
-    parser.add_argument('--output', type=Path, default=None)
-    parser.add_argument('--markdown-output', type=Path, default=None)
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -769,12 +582,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     probe = subparsers.add_parser('train-representation-probes', help='Train linear probes on frozen features.')
     _probe_args(probe)
     probe.set_defaults(_fn=_run_probe)
-
-    position_probe = subparsers.add_parser(
-        'train-position-probes', help='Train linear probes on each VGG decoder-position feature slice.'
-    )
-    _position_probe_args(position_probe)
-    position_probe.set_defaults(_fn=_run_position_probe)
 
     compare = subparsers.add_parser(
         'compare-representation-probes', help='Compare frozen linear probes to generated program outputs.'
@@ -789,20 +596,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     _probe_support_args(support)
     support.set_defaults(_fn=_run_probe_support)
 
-    stability = subparsers.add_parser(
-        'summarize-representation-probe-seeds', help='Summarize probe accuracy across comparison JSON files.'
-    )
-    _seed_stability_args(stability)
-    stability.set_defaults(_fn=_run_seed_stability)
-
 
 def _run_extract(args: argparse.Namespace) -> int:
     result = extract_features(
         FeatureConfig(
             checkpoint_path=args.checkpoint_path,
             model_name=args.model_name,
-            croissant_path=args.croissant_path,
-            basic_charges_csv=args.basic_charges_csv,
+            metadata_path=args.metadata_path,
             image_root=args.image_root,
             output_dir=args.output_dir,
             splits=tuple(args.splits),
@@ -839,31 +639,6 @@ def _run_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_position_probe(args: argparse.Namespace) -> int:
-    result = train_position_probes(
-        PositionProbeConfig(
-            feature_dir=args.feature_dir,
-            model_name=args.model_name,
-            output_dir=args.output_dir,
-            positions=args.positions,
-            batch_size=args.batch_size,
-            max_epochs=args.max_epochs,
-            patience=args.patience,
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            device=args.device,
-            seed=args.seed,
-        )
-    )
-    markdown_path = args.output_dir / 'position_probe_metrics.md'
-    existing: dict[str, dict[str, Any]] = {}
-    for path in sorted(args.output_dir.glob('*_position_probe_metrics.json')):
-        existing[path.name.removesuffix('_position_probe_metrics.json')] = json.loads(path.read_text(encoding='utf-8'))
-    markdown_path.write_text(position_probe_markdown(existing), encoding='utf-8')
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
-
-
 def _run_compare(args: argparse.Namespace) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     result = compare_probes_to_outputs(
@@ -894,8 +669,7 @@ def _run_probe_support(args: argparse.Namespace) -> int:
             feature_dir=args.feature_dir,
             probe_dir=args.probe_dir,
             model_name=args.model_name,
-            croissant_path=args.croissant_path,
-            basic_charges_csv=args.basic_charges_csv,
+            metadata_path=args.metadata_path,
             output_dir=args.output_dir,
             batch_size=args.batch_size,
         )
@@ -908,29 +682,3 @@ def _run_probe_support(args: argparse.Namespace) -> int:
     (args.output_dir / 'probe_support.md').write_text(probe_support_markdown(existing), encoding='utf-8')
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
-
-
-def _run_seed_stability(args: argparse.Namespace) -> int:
-    comparisons = [json.loads(path.read_text(encoding='utf-8')) for path in args.comparison_json]
-    result = summarize_probe_seed_stability(comparisons)
-    result['comparison_json'] = [str(path) for path in args.comparison_json]
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    if args.markdown_output:
-        args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
-        args.markdown_output.write_text(seed_stability_markdown(result, factor=args.factor), encoding='utf-8')
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest='command', required=True)
-    add_parser(subparsers)
-    args = parser.parse_args(argv)
-    return int(args._fn(args))
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

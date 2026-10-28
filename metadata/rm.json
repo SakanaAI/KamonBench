@@ -1,0 +1,5 @@
+{
+  "records": "records.jsonl",
+  "labels": "program",
+  "split": "rm"
+}

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import jsonlines
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
 from PIL import Image
+from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from kamonbench import defaults
@@ -20,7 +21,7 @@ from kamonbench.metrics import character_edit_distance, token_edit_distance
 from kamonbench.models.vgg_ngram import VGGImageToTextModel
 from kamonbench.models.vit_decoder import DecoderImageCaptioner
 from kamonbench.text import strip_after_token, tokens_to_text
-from kamonbench.torch_utils import autocast_context, configure_torch_runtime
+from kamonbench.torch_utils import autocast_context, configure_torch_runtime, seed_runtime
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,6 @@ class TrainConfig:
     use_masks: bool = True
     ngram_length: int = 2
     hidden_dim: int = 512
-    position_embedding_dim: int = 0
     device: str = 'auto'
     vit_encoder_name: str = 'vit_base_patch16_224'
     vit_n_heads: int = 8
@@ -49,13 +49,13 @@ class TrainConfig:
     vit_token_dropout: float = 0.0
     vit_train_backbone: bool | None = None
     vit_backbone_learning_rate: float | None = None
-    vit_enc_proj_rank: int = 0
     start_token: int = -1
     label_smoothing: float | None = None
     weight_decay: float | None = None
-    croissant_path: str = defaults.DEFAULT_CROISSANT_PATH
+    metadata_path: str = defaults.DEFAULT_METADATA_PATH
     use_translation: bool = False
     eval_composites_only: bool = False
+    seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -171,7 +171,6 @@ def _config_from_args(args: argparse.Namespace) -> TrainConfig:
             use_masks=not bool(args.no_masks),
             ngram_length=args.ngram_length,
             hidden_dim=args.hidden_dim,
-            position_embedding_dim=args.position_embedding_dim,
             device=args.device,
             vit_encoder_name=args.vit_encoder_name,
             vit_n_heads=args.vit_n_heads,
@@ -181,13 +180,13 @@ def _config_from_args(args: argparse.Namespace) -> TrainConfig:
             vit_token_dropout=args.vit_token_dropout,
             vit_train_backbone=args.vit_train_backbone,
             vit_backbone_learning_rate=args.vit_backbone_learning_rate,
-            vit_enc_proj_rank=args.vit_enc_proj_rank,
             start_token=args.start_token,
             label_smoothing=args.label_smoothing,
             weight_decay=args.weight_decay,
-            croissant_path=args.croissant_path,
+            metadata_path=args.metadata_path,
             use_translation=bool(args.use_translation),
             eval_composites_only=bool(args.eval_composites_only),
+            seed=args.seed,
         )
     )
 
@@ -249,7 +248,6 @@ def _checkpoint_config(config: TrainConfig) -> dict[str, Any]:
         'image_size': config.image_size,
         'ngram_length': config.ngram_length,
         'hidden_dim': config.hidden_dim,
-        'position_embedding_dim': config.position_embedding_dim,
         'also_train_vgg': config.also_train_vgg,
         'use_masks': config.use_masks,
         'vit_encoder_name': config.vit_encoder_name,
@@ -260,10 +258,10 @@ def _checkpoint_config(config: TrainConfig) -> dict[str, Any]:
         'vit_token_dropout': config.vit_token_dropout,
         'vit_train_backbone': config.vit_train_backbone,
         'vit_backbone_learning_rate': config.vit_backbone_learning_rate,
-        'vit_enc_proj_rank': config.vit_enc_proj_rank,
         'start_token': config.start_token,
         'use_translation': config.use_translation,
         'eval_composites_only': config.eval_composites_only,
+        'seed': config.seed,
     }
 
 
@@ -294,6 +292,8 @@ def _save_checkpoint(
         'end_token': end_token,
         'label_to_expr': label_to_expr,
         'config': _checkpoint_config(config),
+        'seed': config.seed,
+        'deterministic_algorithms': config.seed is not None,
     }
     if train_loss is not None:
         payload['train_loss'] = train_loss
@@ -392,6 +392,8 @@ def _evaluate_model(
                     {
                         'batch_idx': batch_idx,
                         'example_idx': i,
+                        'row_index': metadata_idx,
+                        'record_id': item.get('id'),
                         'image': image_path,
                         'image_path': image_path,
                         'reference': reference_description,
@@ -422,27 +424,43 @@ def _evaluate_model(
 def train(config: TrainConfig) -> int:
     config = resolve_train_config(config)
 
+    if config.seed is not None:
+        seed_runtime(config.seed)
     device = _select_device(config.device)
-    configure_torch_runtime(device)
+    configure_torch_runtime(device, deterministic=config.seed is not None)
 
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     os.makedirs(config.output_dir, exist_ok=True)
+    Path(config.output_dir, 'run_config.json').write_text(
+        json.dumps(
+            {
+                **asdict(config),
+                'deterministic_algorithms': torch.are_deterministic_algorithms_enabled(),
+                'cudnn_benchmark': torch.backends.cudnn.benchmark,
+                'cudnn_deterministic': torch.backends.cudnn.deterministic,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + '\n',
+        encoding='utf-8',
+    )
 
     train_data = KamonDataset(
-        croissant_path=config.croissant_path,
+        metadata_path=config.metadata_path,
         division='train',
         image_size=config.image_size,
         num_augmentations=config.num_train_augmentations,
         use_translation=config.use_translation,
-        one_hot=False,
+        seed=config.seed,
     )
     val_data = KamonDataset(
-        croissant_path=config.croissant_path,
+        metadata_path=config.metadata_path,
         division='dev',
         image_size=config.image_size,
         num_augmentations=0,
         use_translation=config.use_translation,
-        one_hot=False,
+        seed=config.seed,
     )
 
     label_to_expr = train_data.active_label_to_expr
@@ -451,8 +469,12 @@ def train(config: TrainConfig) -> int:
     max_seq_len = train_data.max_len
     use_token_edit_metric = _uses_program_labels(label_to_expr, end_token)
 
-    train_loader = DataLoader(train_data, **dataloader_kwargs(batch_size=config.batch_size, shuffle=True))
-    val_loader = DataLoader(val_data, **dataloader_kwargs(batch_size=config.batch_size, shuffle=False))
+    train_loader = DataLoader(
+        train_data, **dataloader_kwargs(batch_size=config.batch_size, shuffle=True, seed=config.seed)
+    )
+    val_loader = DataLoader(
+        val_data, **dataloader_kwargs(batch_size=config.batch_size, shuffle=False, seed=config.seed)
+    )
     _validate_checkpoint_schedule(config, len(train_loader))
 
     if config.model == 'vgg':
@@ -462,7 +484,6 @@ def train(config: TrainConfig) -> int:
             image_size=config.image_size,
             ngram_length=config.ngram_length,
             hidden_dim=config.hidden_dim,
-            position_embedding_dim=config.position_embedding_dim,
             also_train_vgg=config.also_train_vgg,
             use_masks=config.use_masks,
         ).to(device)
@@ -477,7 +498,6 @@ def train(config: TrainConfig) -> int:
             dropout=config.vit_dropout,
             token_dropout=config.vit_token_dropout,
             train_backbone=config.vit_train_backbone,
-            enc_proj_rank=config.vit_enc_proj_rank,
         ).to(device)
     else:
         raise ValueError(f'Unknown model: {config.model}')
@@ -518,7 +538,7 @@ def train(config: TrainConfig) -> int:
                     model, config.model, images, loss_target_tokens, start_token=config.start_token
                 )
 
-                batch_size, _, vocab_size_out = logits.shape
+                _, _, vocab_size_out = logits.shape
                 ce_loss = criterion(logits.reshape(-1, vocab_size_out), loss_target_tokens.reshape(-1))
 
                 if config.model == 'vgg' and config.use_masks:
@@ -635,7 +655,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--no-masks', action='store_true')
     p.add_argument('--ngram-length', type=int, default=2)
     p.add_argument('--hidden-dim', type=int, default=512)
-    p.add_argument('--position-embedding-dim', type=int, default=0)
     p.add_argument('--device', type=str, default='auto')
     p.add_argument('--vit-encoder-name', type=str, default='vit_base_patch16_224')
     p.add_argument('--vit-n-heads', type=int, default=8)
@@ -645,19 +664,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--vit-token-dropout', type=float, default=0.0)
     p.add_argument('--vit-train-backbone', action=argparse.BooleanOptionalAction, default=None)
     p.add_argument('--vit-backbone-learning-rate', type=float, default=None)
-    p.add_argument('--vit-enc-proj-rank', type=int, default=0)
     p.add_argument('--start-token', type=int, default=-1)
     p.add_argument('--label-smoothing', type=float, default=None)
     p.add_argument('--weight-decay', type=float, default=None)
-    p.add_argument('--croissant-path', type=str, default=defaults.DEFAULT_CROISSANT_PATH)
+    p.add_argument('--metadata-path', type=str, default=defaults.DEFAULT_METADATA_PATH)
     p.add_argument(
-        '--use-translation', action='store_true', help='Use Croissant translation tokens instead of analysis.'
+        '--use-translation', action='store_true', help='Use metadata translation tokens instead of analysis.'
     )
     p.add_argument(
         '--eval-composites-only',
         action='store_true',
         help='Select best checkpoints using only composite validation examples.',
     )
+    p.add_argument('--seed', type=int, default=None, help='Seed Python, NumPy, PyTorch, workers, and shuffling.')
     p.set_defaults(_fn=_run)
 
 

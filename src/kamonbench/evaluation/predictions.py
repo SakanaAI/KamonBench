@@ -7,12 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kamonbench.reporting.html import (
-    calculate_character_error_rate,
-    calculate_token_error_rate,
-    is_program_label,
-    preprocess_text_for_comparison,
-)
+from kamonbench.data.metadata import load_records
+from kamonbench.metrics import character_error_rate, token_error_rate
+from kamonbench.reporting.html import is_program_label
+from kamonbench.text import normalize_japanese_for_comparison
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -20,9 +18,8 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def load_croissant_split(path: Path, split: str) -> list[dict[str, Any]]:
-    data = json.loads(path.read_text(encoding='utf-8'))
-    return [record for record in data['recordSet'][0]['data'] if record['split'] == split]
+def load_metadata_split(path: Path, split: str) -> list[dict[str, Any]]:
+    return [record for record in load_records(path) if record['split'] == split]
 
 
 @dataclass(frozen=True)
@@ -34,7 +31,9 @@ class RowStats:
 
 
 def _is_correct(row: dict[str, Any]) -> bool:
-    return preprocess_text_for_comparison(_reference_text(row)) == preprocess_text_for_comparison(_predicted_text(row))
+    return normalize_japanese_for_comparison(_reference_text(row)) == normalize_japanese_for_comparison(
+        _predicted_text(row)
+    )
 
 
 def _is_no_training_support(row: dict[str, Any]) -> bool:
@@ -57,11 +56,11 @@ def _row_stats(row: dict[str, Any], *, use_token_error: bool) -> RowStats:
     reference = _reference_text(row)
     predicted = _predicted_text(row)
     if use_token_error:
-        ins, dels, subs, _ = calculate_token_error_rate(reference, predicted)
+        ins, dels, subs, _ = token_error_rate(reference, predicted)
         ref_units = len(reference.split())
     else:
-        ins, dels, subs, _ = calculate_character_error_rate(reference, predicted)
-        ref_units = len(preprocess_text_for_comparison(reference))
+        ins, dels, subs, _ = character_error_rate(reference, predicted)
+        ref_units = len(normalize_japanese_for_comparison(reference))
     return RowStats(
         edits=ins + dels + subs,
         ref_chars=ref_units,
@@ -75,9 +74,9 @@ def _is_composite_row(row: dict[str, Any]) -> bool:
     return '_base' not in image and '_container' not in image
 
 
-def _with_croissant_images(rows: list[dict[str, Any]], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _with_metadata_images(rows: list[dict[str, Any]], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if len(rows) != len(records):
-        raise ValueError(f'Prediction rows ({len(rows)}) do not match Croissant rows ({len(records)})')
+        raise ValueError(f'Prediction rows ({len(rows)}) do not match metadata rows ({len(records)})')
     paired = []
     for row, record in zip(rows, records, strict=True):
         updated = dict(row)
@@ -161,11 +160,11 @@ def evaluate_predictions(
     *,
     bootstrap_samples: int = 0,
     bootstrap_seed: int = 20260428,
-    croissant_records: list[dict[str, Any]] | None = None,
+    metadata_records: list[dict[str, Any]] | None = None,
     include_slices: bool = False,
 ):
-    if croissant_records is not None:
-        rows = _with_croissant_images(rows, croissant_records)
+    if metadata_records is not None:
+        rows = _with_metadata_images(rows, metadata_records)
     result = summarize_predictions(rows)
     if include_slices:
         result['slices'] = summarize_prediction_slices(rows)
@@ -182,7 +181,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser('summarize-predictions', help='Summarize prediction JSONL metrics.')
     parser.add_argument('input_jsonl', type=Path)
     parser.add_argument('--output', type=Path, default=None)
-    parser.add_argument('--croissant-path', type=Path, default=None)
+    parser.add_argument('--metadata-path', type=Path, default=None)
     parser.add_argument('--split', choices=['train', 'dev', 'test'], default='test')
     parser.add_argument('--include-slices', action='store_true')
     parser.add_argument('--bootstrap-samples', type=int, default=0)
@@ -191,17 +190,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run(args: argparse.Namespace) -> int:
-    croissant_records = load_croissant_split(args.croissant_path, args.split) if args.croissant_path else None
+    metadata_records = load_metadata_split(args.metadata_path, args.split) if args.metadata_path else None
     result = evaluate_predictions(
         load_jsonl(args.input_jsonl),
         bootstrap_samples=args.bootstrap_samples,
         bootstrap_seed=args.bootstrap_seed,
-        croissant_records=croissant_records,
+        metadata_records=metadata_records,
         include_slices=args.include_slices,
     )
     result['input_jsonl'] = str(args.input_jsonl)
-    if args.croissant_path:
-        result['croissant_path'] = str(args.croissant_path)
+    if args.metadata_path:
+        result['metadata_path'] = str(args.metadata_path)
         result['split'] = args.split
 
     if args.output:

@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from copy import deepcopy
 from enum import Enum
-from typing import Dict
 
 import numpy as np
 from PIL import Image
@@ -25,7 +24,7 @@ def array_to_image(ar: np.ndarray) -> Image.Image:
     return Image.fromarray(ar.astype(np.uint8))
 
 
-def create_nonwhite_masks(ar: np.ndarray, *, shape: tuple[int, int, int], offset: tuple[int, int]) -> Dict[int, Mask]:
+def create_nonwhite_masks(ar: np.ndarray, *, shape: tuple[int, int, int], offset: tuple[int, int]) -> dict[int, Mask]:
     canvas = np.ones(shape) * 255
     canvas[offset[0] : offset[0] + ar.shape[0], offset[1] : offset[1] + ar.shape[1], :] = ar
     masks = defaultdict(Mask)
@@ -42,10 +41,10 @@ def create_nonwhite_masks(ar: np.ndarray, *, shape: tuple[int, int, int], offset
     return masks
 
 
-def apply_nonwhite_masks(ar: np.ndarray, masks: Dict[int, Mask]) -> np.ndarray:
+def apply_nonwhite_masks(ar: np.ndarray, masks: dict[int, Mask]) -> np.ndarray:
     ar = deepcopy(ar)
-    for pix in masks:
-        ar[masks[pix]] = pix
+    for pix, mask in masks.items():
+        ar[mask] = pix
     return ar
 
 

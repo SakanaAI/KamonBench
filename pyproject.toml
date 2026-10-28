@@ -10,14 +10,19 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+  "accelerate==1.7.0",
   "jaconv>=0.3.4",
   "jsonlines>=4.0.0",
-  "numpy>=1.20.0",
-  "Pillow>=9.0.0",
+  "numpy==2.4.4",
+  "peft==0.17.1",
+  "Pillow==12.3.0",
+  "safetensors==0.6.2",
   "timm>=1.0.0",
+  "tokenizers==0.22.2",
   "torch==2.9.1",
   "torchvision>=0.15.0",
   "tqdm>=4.65.0",
+  "transformers==4.57.1",
 ]
 
 [project.scripts]
@@ -34,3 +39,4 @@ packages = ["src/kamonbench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

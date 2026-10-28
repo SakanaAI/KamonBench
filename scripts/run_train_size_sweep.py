@@ -33,16 +33,16 @@ def run_checked(cmd: list[str], *, cwd: Path, log: Path | None = None, env: dict
         subprocess.run(cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT, check=True)
 
 
-def croissant_for(croissant_root: Path, job: Job) -> Path:
-    suffix = '_program' if job.label == 'program' else ''
-    return croissant_root / f'train_{job.size}' / f'kamon_croissant{suffix}.json'
+def metadata_for(metadata_root: Path, job: Job) -> Path:
+    name = 'program.jsonl' if job.label == 'program' else 'records.jsonl'
+    return metadata_root / f'train_{job.size}' / name
 
 
-def train_args(job: Job, *, croissant: Path, checkpoint_dir: Path, output_dir: Path) -> list[str]:
+def train_args(job: Job, *, metadata: Path, checkpoint_dir: Path, output_dir: Path) -> list[str]:
     args = [
         'train',
-        '--croissant-path',
-        str(croissant),
+        '--metadata-path',
+        str(metadata),
         '--checkpoint-dir',
         str(checkpoint_dir),
         '--output-dir',
@@ -142,7 +142,7 @@ def job_paths(sweep_root: Path, job: Job) -> tuple[Path, Path, Path]:
     return size_root / 'checkpoints' / job.name, size_root / 'runs' / job.name, size_root / 'logs'
 
 
-def training_command(project_root: Path, code_root: Path, sweep_root: Path, croissant_root: Path, job: Job):
+def training_command(project_root: Path, code_root: Path, sweep_root: Path, metadata_root: Path, job: Job):
     checkpoint_dir, output_dir, log_dir = job_paths(sweep_root, job)
     if (output_dir / 'step_final' / 'predictions.jsonl').exists() and best_checkpoint(checkpoint_dir):
         return None
@@ -150,12 +150,12 @@ def training_command(project_root: Path, code_root: Path, sweep_root: Path, croi
     output_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     cmd = [str(code_root / '.venv' / 'bin' / 'python'), '-m', 'kamonbench'] + train_args(
-        job, croissant=croissant_for(croissant_root, job), checkpoint_dir=checkpoint_dir, output_dir=output_dir
+        job, metadata=metadata_for(metadata_root, job), checkpoint_dir=checkpoint_dir, output_dir=output_dir
     )
     return cmd, log_dir / f'train_{job.name}.log'
 
 
-def inference_command(code_root: Path, sweep_root: Path, croissant_root: Path, job: Job):
+def inference_command(code_root: Path, sweep_root: Path, metadata_root: Path, job: Job):
     checkpoint_dir, output_dir, log_dir = job_paths(sweep_root, job)
     test_jsonl = output_dir / 'test.jsonl'
     if test_jsonl.exists():
@@ -169,8 +169,8 @@ def inference_command(code_root: Path, sweep_root: Path, croissant_root: Path, j
         str(best),
         '--output-file',
         str(test_jsonl),
-        '--croissant-path',
-        str(croissant_for(croissant_root, job)),
+        '--metadata-path',
+        str(metadata_for(metadata_root, job)),
         '--batch-size',
         '64',
         '--device',
@@ -221,7 +221,7 @@ def run_parallel(*, phase: str, jobs: list[Job], gpus: list[str], cwd: Path, bui
         running = still_running
 
 
-def summarize_job(project_root: Path, code_root: Path, sweep_root: Path, croissant_root: Path, job: Job) -> None:
+def summarize_job(project_root: Path, code_root: Path, sweep_root: Path, metadata_root: Path, job: Job) -> None:
     _, output_dir, log_dir = job_paths(sweep_root, job)
     test_jsonl = output_dir / 'test.jsonl'
     summary_json = output_dir / 'test_summary_slices.json'
@@ -235,8 +235,8 @@ def summarize_job(project_root: Path, code_root: Path, sweep_root: Path, croissa
                 'kamonbench',
                 'summarize-predictions',
                 str(test_jsonl),
-                '--croissant-path',
-                str(croissant_for(croissant_root, job)),
+                '--metadata-path',
+                str(metadata_for(metadata_root, job)),
                 '--split',
                 'test',
                 '--include-slices',
@@ -274,22 +274,22 @@ def main() -> int:
 
     script_dir = Path(__file__).resolve().parent
     code_root = script_dir.parent
-    project_root = code_root.parent.parent
+    project_root = code_root
     python = code_root / '.venv' / 'bin' / 'python'
     sweep_root = project_root / 'baselines' / 'train_size_sweeps'
-    croissant_root = sweep_root / 'croissants'
+    metadata_root = sweep_root / 'metadata'
     jobs = [Job(size, family, label) for size in args.sizes for family in FAMILIES for label in LABELS]
 
     run_checked(
         [
             str(python),
-            str(script_dir / 'make_train_size_croissants.py'),
-            '--source-croissant',
-            str(project_root / 'dataset01' / 'kamon_croissant.json'),
-            '--program-croissant',
-            str(project_root / 'etc' / 'source' / 'kamon_croissant_program.json'),
+            str(script_dir / 'make_train_size_metadata.py'),
+            '--source-metadata',
+            str(project_root / 'metadata' / 'records.jsonl'),
+            '--program-metadata',
+            str(project_root / 'metadata' / 'program.json'),
             '--output-dir',
-            str(croissant_root),
+            str(metadata_root),
             '--sizes',
             *[str(size) for size in args.sizes],
         ],
@@ -300,18 +300,18 @@ def main() -> int:
         jobs=jobs,
         gpus=args.gpus,
         cwd=project_root,
-        build_command=lambda job: training_command(project_root, code_root, sweep_root, croissant_root, job),
+        build_command=lambda job: training_command(project_root, code_root, sweep_root, metadata_root, job),
     )
     run_parallel(
         phase='infer',
         jobs=jobs,
         gpus=args.gpus,
         cwd=project_root,
-        build_command=lambda job: inference_command(code_root, sweep_root, croissant_root, job),
+        build_command=lambda job: inference_command(code_root, sweep_root, metadata_root, job),
     )
     for job in jobs:
         print(f'==> summarize train_{job.size} {job.name}', flush=True)
-        summarize_job(project_root, code_root, sweep_root, croissant_root, job)
+        summarize_job(project_root, code_root, sweep_root, metadata_root, job)
     run_checked(
         [
             str(python),

@@ -20,7 +20,7 @@ from kamonbench.text import (
     strip_after_token,
     tokens_to_text,
 )
-from kamonbench.torch_utils import autocast_context, configure_torch_runtime
+from kamonbench.torch_utils import autocast_context, configure_torch_runtime, seed_runtime
 
 
 @dataclass(frozen=True)
@@ -32,8 +32,9 @@ class InferConfig:
     output_file: str | None = None
     batch_size: int = 16
     device: str = 'auto'
-    croissant_path: str = defaults.DEFAULT_CROISSANT_PATH
+    metadata_path: str = defaults.DEFAULT_METADATA_PATH
     use_translation: bool = False
+    seed: int | None = None
 
 
 def resolve_infer_config(config: InferConfig) -> InferConfig:
@@ -129,6 +130,7 @@ def run_inference(
                 reference_description = tokens_to_text(gt_tokens_list, label_to_expr)
 
                 example_idx = batch_idx * dataloader.batch_size + i
+                item_metadata: dict[str, Any] = {}
                 if example_idx < len(dataset_metadata):
                     item_metadata = dataset_metadata[example_idx]
                     image_path = item_metadata.get('image_path', '')
@@ -151,9 +153,12 @@ def run_inference(
 
                 results.append(
                     {
+                        'record_id': item_metadata.get('id'),
+                        'row_index': example_idx,
                         'reference': reference_description,
                         'predicted': predicted_description,
                         'image': image_path,
+                        'image_path': image_path,
                         'translation': translation,
                         'train_images_reference': train_images_reference,
                         'train_images_predicted': train_images_predicted,
@@ -172,8 +177,10 @@ def infer(config: InferConfig) -> int:
     if config.dataset_subset not in {'train', 'dev', 'test'}:
         raise ValueError('--dataset-subset must be one of train/dev/test')
 
+    if config.seed is not None:
+        seed_runtime(config.seed)
     device = _select_device(config.device)
-    configure_torch_runtime(device)
+    configure_torch_runtime(device, deterministic=config.seed is not None)
     checkpoint_path = _resolve_checkpoint_path(config.checkpoint_path)
     model, checkpoint_metadata = load_checkpoint(
         checkpoint_path, device, model_override=config.model, start_token_override=config.start_token
@@ -187,25 +194,25 @@ def infer(config: InferConfig) -> int:
         )
 
     train_dataset = KamonDataset(
-        croissant_path=config.croissant_path,
+        metadata_path=config.metadata_path,
         division='train',
         image_size=checkpoint_metadata['image_size'],
         num_augmentations=0,
-        one_hot=False,
         use_translation=config.use_translation,
+        seed=config.seed,
     )
     train_desc_to_images = build_description_to_images_map(train_dataset)
 
     dataset = KamonDataset(
-        croissant_path=config.croissant_path,
+        metadata_path=config.metadata_path,
         division=config.dataset_subset,
         image_size=checkpoint_metadata['image_size'],
         num_augmentations=0,
-        one_hot=False,
         use_translation=config.use_translation,
+        seed=config.seed,
     )
 
-    dataloader = DataLoader(dataset, **dataloader_kwargs(batch_size=config.batch_size, shuffle=False))
+    dataloader = DataLoader(dataset, **dataloader_kwargs(batch_size=config.batch_size, shuffle=False, seed=config.seed))
 
     results = run_inference(
         model,
@@ -245,9 +252,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--output-file', type=str, default=None)
     p.add_argument('--batch-size', type=int, default=16)
     p.add_argument('--device', type=str, default='auto')
-    p.add_argument('--croissant-path', type=str, default=defaults.DEFAULT_CROISSANT_PATH)
+    p.add_argument('--metadata-path', type=str, default=defaults.DEFAULT_METADATA_PATH)
+    p.add_argument('--seed', type=int, default=None)
     p.add_argument(
-        '--use-translation', action='store_true', help='Use Croissant translation tokens instead of analysis.'
+        '--use-translation', action='store_true', help='Use metadata translation tokens instead of analysis.'
     )
     p.set_defaults(_fn=_run)
 
@@ -261,7 +269,8 @@ def _run(args: argparse.Namespace) -> int:
         output_file=args.output_file,
         batch_size=args.batch_size,
         device=args.device,
-        croissant_path=args.croissant_path,
+        metadata_path=args.metadata_path,
         use_translation=bool(args.use_translation),
+        seed=args.seed,
     )
     return infer(config)
